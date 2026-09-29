@@ -1896,8 +1896,8 @@ async def test_enrich_tracks_with_db_genres_adds_missing_genres() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_tracks_with_db_genres_skips_tracks_with_existing_genres() -> None:
-    """Tracks that already have genres should not be queried."""
+async def test_enrich_tracks_with_db_genres_merges_with_existing_genres() -> None:
+    """Library genres linked to a track are merged into the genres already on it."""
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
@@ -1905,7 +1905,6 @@ async def test_enrich_tracks_with_db_genres_skips_tracks_with_existing_genres() 
     config.get_value.return_value = "GLOBAL"
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
-    # Track with existing genres
     track_with_genres = Track(
         item_id="456",
         provider="library",
@@ -1921,15 +1920,72 @@ async def test_enrich_tracks_with_db_genres_skips_tracks_with_existing_genres() 
         },
     )
     track_with_genres.metadata = MediaItemMetadata()
-    track_with_genres.metadata.genres = {"Pop", "Dance"}
+    track_with_genres.metadata.genres = {"Pop"}
 
-    mass.music.genres.get_genres_for_media_item = AsyncMock()
+    christmas_genre = Genre(
+        item_id="7", provider="library", name="Christmas", provider_mappings=set()
+    )
+    pop_genre = Genre(item_id="3", provider="library", name="Pop", provider_mappings=set())
+    mass.music.genres.get_genres_for_media_item = AsyncMock(
+        return_value=[christmas_genre, pop_genre]
+    )
 
     await plugin._enrich_tracks_with_db_genres([track_with_genres])
 
-    # Should not query genres controller since track already has genres
-    mass.music.genres.get_genres_for_media_item.assert_not_called()
-    assert track_with_genres.metadata.genres == {"Pop", "Dance"}
+    mass.music.genres.get_genres_for_media_item.assert_called_once()
+    assert track_with_genres.metadata.genres == {"Pop", "Christmas"}
+
+
+@pytest.mark.asyncio
+async def test_excluded_genre_drops_track_linked_via_db_but_not_tagged() -> None:
+    """A track tagged only Pop but linked to Christmas in the library is excluded."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    def _track(item_id: str, tag_genres: set[str]) -> Track:
+        track = Track(
+            item_id=item_id,
+            provider="library",
+            name=f"Track {item_id}",
+            uri=f"library://track/{item_id}",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain="library",
+                    provider_instance="library",
+                    available=True,
+                )
+            },
+        )
+        track.metadata = MediaItemMetadata()
+        track.metadata.genres = tag_genres
+        return track
+
+    christmas_pop = _track("1", {"Pop"})
+    plain_pop = _track("2", {"Pop"})
+    christmas_genre = Genre(
+        item_id="7", provider="library", name="Christmas", provider_mappings=set()
+    )
+    pop_genre = Genre(item_id="3", provider="library", name="Pop", provider_mappings=set())
+
+    async def _genres_for(_media_type: MediaType, track_id: int) -> list[Genre]:
+        return [christmas_genre, pop_genre] if track_id == 1 else [pop_genre]
+
+    mass.music.genres.get_genres_for_media_item = AsyncMock(side_effect=_genres_for)
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[christmas_pop, plain_pop])
+
+    rules = SmartPlaylistRules(
+        excluded_genre_ids=[7],
+        excluded_genre_names={7: "Christmas"},
+        limit=10,
+    )
+    result = await plugin._evaluate_rules(rules)
+
+    assert [t.item_id for t in result] == ["2"]
 
 
 @pytest.mark.asyncio

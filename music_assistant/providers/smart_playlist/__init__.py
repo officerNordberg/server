@@ -1040,25 +1040,17 @@ class SmartPlaylistProvider(PluginProvider):
                     genre_id_to_name[genre_id] = genre.name
         return {v.lower() for v in genre_id_to_name.values() if v}
 
-    async def _build_track_id_map(
-        self,
-        tracks: list[Track],
-        skip_tracks_with_genres: bool = False,
-    ) -> dict[int, list[Track]]:
+    async def _build_track_id_map(self, tracks: list[Track]) -> dict[int, list[Track]]:
         """
         Build mapping of library track ID to track objects, resolving provider tracks to library.
 
         :param tracks: Tracks to process
-        :param skip_tracks_with_genres: Skip tracks that already have genre metadata
         :return: Mapping of library track ID to list of track objects
         """
         track_id_to_tracks: dict[int, list[Track]] = {}
         provider_track_tasks: list[tuple[Track, str, str]] = []
 
         for track in tracks:
-            if skip_tracks_with_genres and track.metadata and track.metadata.genres:
-                continue
-
             if track.provider == "library" and str(track.item_id).isdigit():
                 track_id = int(track.item_id)
                 if track_id not in track_id_to_tracks:
@@ -1100,15 +1092,16 @@ class SmartPlaylistProvider(PluginProvider):
 
     async def _enrich_tracks_with_db_genres(self, tracks: list[Track]) -> None:
         """
-        Enrich library tracks with genre data from the database.
+        Merge the library genres linked to each track into track.metadata.genres.
 
-        For tracks missing genre metadata, retrieves genre associations from the database
-        and populates track.metadata.genres.
+        Tag genres alone are not enough to match genre rules: a track can be linked to a genre
+        through an alias, its album or artist, or a manual mapping without that genre name
+        appearing in its own tags.
         """
         if not tracks:
             return
 
-        track_id_to_tracks = await self._build_track_id_map(tracks, skip_tracks_with_genres=True)
+        track_id_to_tracks = await self._build_track_id_map(tracks)
         if not track_id_to_tracks:
             return
 
