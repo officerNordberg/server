@@ -299,6 +299,8 @@ class TracksController(MediaControllerBase[Track]):
         *,
         summary: bool = True,
         reachable_via: list[str] | None = None,
+        album_ids: list[int] | None = None,
+        artist_ids: list[int] | None = None,
         **kwargs: Any,
     ) -> list[Track]:
         """
@@ -318,6 +320,8 @@ class TracksController(MediaControllerBase[Track]):
         :param reachable_via: Restrict results to items with a provider mapping reachable
             through one of these provider instance ids (OR semantics). See
             `MediaControllerBase.library_items` for the full semantics.
+        :param album_ids: Only include tracks on one of these library albums.
+        :param artist_ids: Only include tracks by one of these library artists.
         """
         reachable_via = self._resolve_reachable_via(reachable_via)
         if reachable_via is not None and not reachable_via:
@@ -325,6 +329,21 @@ class TracksController(MediaControllerBase[Track]):
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
+
+        if album_ids:
+            extra_query_params["filter_album_ids"] = [int(x) for x in album_ids]
+            extra_query_parts.append(
+                f"EXISTS(SELECT 1 FROM {DB_TABLE_ALBUM_TRACKS} "
+                f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = tracks.item_id "
+                f"AND {DB_TABLE_ALBUM_TRACKS}.album_id IN :filter_album_ids)"
+            )
+        if artist_ids:
+            extra_query_params["filter_artist_ids"] = [int(x) for x in artist_ids]
+            extra_query_parts.append(
+                f"EXISTS(SELECT 1 FROM {DB_TABLE_TRACK_ARTISTS} "
+                f"WHERE {DB_TABLE_TRACK_ARTISTS}.track_id = tracks.item_id "
+                f"AND {DB_TABLE_TRACK_ARTISTS}.artist_id IN :filter_artist_ids)"
+            )
 
         # Apply explicit content filter
         if explicit is not None:

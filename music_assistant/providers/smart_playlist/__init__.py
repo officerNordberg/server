@@ -1197,33 +1197,14 @@ class SmartPlaylistProvider(PluginProvider):
             explicit=rules.explicit,
             limit=min(rules.limit * 5, 2000),
             user_provider_filter=user_provider_filter,
+            album_ids=rules.album_ids or None,
+            artist_ids=rules.artist_ids or None,
         )
 
         # When multiple genres are specified with AND logic, filter to tracks that have ALL genres
         if has_genre and len(rules.genre_ids) > 1:
             base_tracks = await self._filter_tracks_with_all_genres(base_tracks, rules.genre_ids)
 
-        if not has_artist and not has_album:
-            return base_tracks
-
-        if has_artist:
-            artist_id_set = set(rules.artist_ids)
-            base_tracks = [
-                t
-                for t in base_tracks
-                if {int(a.item_id) for a in t.artists if a.item_id and str(a.item_id).isdigit()}
-                & artist_id_set
-            ]
-        if has_album:
-            album_id_set = set(rules.album_ids)
-            base_tracks = [
-                t
-                for t in base_tracks
-                if t.album
-                and t.album.item_id
-                and str(t.album.item_id).isdigit()
-                and int(t.album.item_id) in album_id_set
-            ]
         return base_tracks
 
     async def _evaluate_or(
@@ -1255,32 +1236,25 @@ class SmartPlaylistProvider(PluginProvider):
                 if track.uri:
                     track_sets[track.uri] = track
 
-        if rules.artist_ids or rules.album_ids:
-            all_tracks = await self._get_library_tracks(
+        if rules.artist_ids:
+            for track in await self._get_library_tracks(
                 explicit=rules.explicit,
-                limit=min(fetch_limit * 2, FETCH_LIMIT),
+                limit=fetch_limit,
                 user_provider_filter=user_provider_filter,
-            )
-            if rules.artist_ids:
-                artist_id_set = set(rules.artist_ids)
-                for track in all_tracks:
-                    if {
-                        int(a.item_id)
-                        for a in track.artists
-                        if a.item_id and str(a.item_id).isdigit()
-                    } & artist_id_set and track.uri:
-                        track_sets[track.uri] = track
-            if rules.album_ids:
-                album_id_set = set(rules.album_ids)
-                for track in all_tracks:
-                    if (
-                        track.album
-                        and track.album.item_id
-                        and str(track.album.item_id).isdigit()
-                        and int(track.album.item_id) in album_id_set
-                        and track.uri
-                    ):
-                        track_sets[track.uri] = track
+                artist_ids=rules.artist_ids,
+            ):
+                if track.uri:
+                    track_sets[track.uri] = track
+
+        if rules.album_ids:
+            for track in await self._get_library_tracks(
+                explicit=rules.explicit,
+                limit=fetch_limit,
+                user_provider_filter=user_provider_filter,
+                album_ids=rules.album_ids,
+            ):
+                if track.uri:
+                    track_sets[track.uri] = track
 
         no_filters = (
             not rules.favorites_only
@@ -1306,6 +1280,8 @@ class SmartPlaylistProvider(PluginProvider):
         explicit: bool | None = None,
         limit: int = 500,
         user_provider_filter: list[str] | None = None,
+        album_ids: list[int] | None = None,
+        artist_ids: list[int] | None = None,
     ) -> list[Track]:
         """Fetch library tracks with optional filters."""
         return await self.mass.music.tracks.library_items(
@@ -1316,6 +1292,8 @@ class SmartPlaylistProvider(PluginProvider):
             order_by="random",
             provider=user_provider_filter,
             summary=False,
+            album_ids=album_ids,
+            artist_ids=artist_ids,
         )
 
     async def _tracks_from_seeds(

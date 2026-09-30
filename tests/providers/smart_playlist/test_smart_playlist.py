@@ -436,8 +436,8 @@ async def test_evaluate_and_no_filters_returns_library() -> None:
 
 
 @pytest.mark.asyncio
-async def test_evaluate_and_artist_filter() -> None:
-    """AND logic filters tracks to only those from the specified artists."""
+async def test_evaluate_and_artist_and_album_filter_in_query() -> None:
+    """AND logic hands artist and album rules to the library query instead of a random sample."""
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
@@ -445,14 +445,39 @@ async def test_evaluate_and_artist_filter() -> None:
     config.get_value.return_value = "GLOBAL"
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
-    artist_a = _make_mock_track("1", artist_ids=["10"])
-    artist_b = _make_mock_track("2", artist_ids=["20"])
-    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[artist_a, artist_b])
+    album_track = _make_mock_track("1", artist_ids=["10"])
+    get_library = AsyncMock(return_value=[album_track])
+    cast("Any", plugin)._get_library_tracks = get_library
 
-    rules = SmartPlaylistRules(artist_ids=[10], logic=LOGIC_AND, limit=10)
+    rules = SmartPlaylistRules(artist_ids=[10], album_ids=[42], logic=LOGIC_AND, limit=10)
     result = await plugin._evaluate_and(rules)
-    assert len(result) == 1
-    assert result[0].item_id == "1"
+
+    assert result == [album_track]
+    call_kwargs = get_library.call_args.kwargs
+    assert call_kwargs["artist_ids"] == [10]
+    assert call_kwargs["album_ids"] == [42]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_or_album_queried_separately() -> None:
+    """OR logic runs a dedicated library query per album rule so no album track is missed."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    album_tracks = [_make_mock_track(str(i), f"library://track/{i}") for i in range(12)]
+
+    async def mock_get_library(**kwargs: Any) -> list[MagicMock]:
+        return album_tracks if kwargs.get("album_ids") == [42] else []
+
+    cast("Any", plugin)._get_library_tracks = mock_get_library
+
+    rules = SmartPlaylistRules(album_ids=[42], logic=LOGIC_OR, limit=50)
+    result = await plugin._evaluate_or(rules)
+    assert len(result) == 12
 
 
 @pytest.mark.asyncio
@@ -471,7 +496,9 @@ async def test_evaluate_or_genre_and_artist_union() -> None:
     async def mock_get_library(**kwargs: Any) -> list[MagicMock]:
         if kwargs.get("genre_ids"):
             return [genre_track]
-        return [genre_track, artist_track]
+        if kwargs.get("artist_ids"):
+            return [artist_track]
+        return []
 
     cast("Any", plugin)._get_library_tracks = mock_get_library
 

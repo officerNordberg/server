@@ -1,0 +1,4 @@
+FROM ghcr.io/music-assistant/server:2.11.0b3
+ARG SP=/app/venv/lib/python3.14/site-packages/music_assistant
+COPY music_assistant/controllers/music/media/tracks.py $SP/controllers/music/media/tracks.py
+COPY music_assistant/providers/smart_playlist/__init__.py $SP/providers/smart_playlist/__init__.py
