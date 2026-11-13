@@ -48,7 +48,11 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import MediaItemImage, MediaItemMetadata
 
-from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_TRACK_ARTISTS,
+    DYNAMIC_PLAYLIST_SAMPLE_SIZE,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.music.constants import DYNAMIC_RADIO_BASE_SAMPLE_SIZE
 from music_assistant.controllers.music.favorites import with_user_favorites
@@ -1191,13 +1195,23 @@ class SmartPlaylistProvider(PluginProvider):
                 user_provider_filter=user_provider_filter,
             )
 
+        favorite = True if rules.favorites_only else None
+        genre_ids = rules.genre_ids if has_genre else None
         if has_folder:
             base_tracks = await self._folder_tracks(
                 rules.folder_paths, rules.explicit, user_provider_filter
             )
+        elif has_artist or has_album:
+            base_tracks = await self._get_linked_library_tracks(
+                rules.album_ids,
+                rules.artist_ids,
+                match_all=True,
+                favorite=favorite,
+                genre_ids=genre_ids,
+                explicit=rules.explicit,
+                user_provider_filter=user_provider_filter,
+            )
         else:
-            favorite = True if rules.favorites_only else None
-            genre_ids = rules.genre_ids if has_genre else None
             base_tracks = await self._get_library_tracks(
                 favorite=favorite,
                 genre_ids=genre_ids,
@@ -1210,7 +1224,8 @@ class SmartPlaylistProvider(PluginProvider):
         if rules.favorites_only:
             base_tracks = [t for t in base_tracks if t.favorite]
 
-        if has_artist:
+        # folder tracks are not narrowed down by artist or album yet, library tracks already are
+        if has_folder and has_artist:
             artist_id_set = set(rules.artist_ids)
             base_tracks = [
                 t
@@ -1218,7 +1233,7 @@ class SmartPlaylistProvider(PluginProvider):
                 if {int(a.item_id) for a in t.artists if a.item_id and str(a.item_id).isdigit()}
                 & artist_id_set
             ]
-        if has_album:
+        if has_folder and has_album:
             album_id_set = set(rules.album_ids)
             base_tracks = [
                 t
@@ -1281,31 +1296,15 @@ class SmartPlaylistProvider(PluginProvider):
                     track_sets[track.uri] = track
 
         if rules.artist_ids or rules.album_ids:
-            all_tracks = await self._get_library_tracks(
+            for track in await self._get_linked_library_tracks(
+                rules.album_ids,
+                rules.artist_ids,
+                match_all=False,
                 explicit=rules.explicit,
-                limit=min(fetch_limit * 2, FETCH_LIMIT),
                 user_provider_filter=user_provider_filter,
-            )
-            if rules.artist_ids:
-                artist_id_set = set(rules.artist_ids)
-                for track in all_tracks:
-                    if {
-                        int(a.item_id)
-                        for a in track.artists
-                        if a.item_id and str(a.item_id).isdigit()
-                    } & artist_id_set and track.uri:
-                        track_sets[track.uri] = track
-            if rules.album_ids:
-                album_id_set = set(rules.album_ids)
-                for track in all_tracks:
-                    if (
-                        track.album
-                        and track.album.item_id
-                        and str(track.album.item_id).isdigit()
-                        and int(track.album.item_id) in album_id_set
-                        and track.uri
-                    ):
-                        track_sets[track.uri] = track
+            ):
+                if track.uri:
+                    track_sets[track.uri] = track
 
         no_filters = (
             not rules.favorites_only
@@ -1343,6 +1342,56 @@ class SmartPlaylistProvider(PluginProvider):
             provider=user_provider_filter,
             summary=False,
         )
+
+    async def _get_linked_library_tracks(
+        self,
+        album_ids: list[int],
+        artist_ids: list[int],
+        match_all: bool,
+        favorite: bool | None = None,
+        genre_ids: list[int] | None = None,
+        explicit: bool | None = None,
+        user_provider_filter: Sequence[str] | None = None,
+    ) -> list[Track]:
+        """
+        Fetch a random selection of the library tracks on the given albums and/or by the given artists.
+
+        :param album_ids: Library IDs of the albums the tracks should be on.
+        :param artist_ids: Library IDs of the artists the tracks should be by.
+        :param match_all: True to require both an album and an artist match, False for either.
+        :param favorite: Only include liked (True) or disliked (False) tracks.
+        :param genre_ids: Only include tracks mapped to any of these genres.
+        :param explicit: True for explicit tracks only, False to leave them out, None for all.
+        :param user_provider_filter: Provider instances the tracks must be available on.
+        """
+        query_parts: list[str] = []
+        query_params: dict[str, Any] = {}
+        if album_ids:
+            query_parts.append(
+                f"tracks.item_id IN (SELECT track_id FROM {DB_TABLE_ALBUM_TRACKS} "
+                "WHERE album_id IN :sp_album_ids)"
+            )
+            query_params["sp_album_ids"] = list(album_ids)
+        if artist_ids:
+            query_parts.append(
+                f"tracks.item_id IN (SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} "
+                "WHERE artist_id IN :sp_artist_ids)"
+            )
+            query_params["sp_artist_ids"] = list(artist_ids)
+        if not query_parts:
+            return []
+        if not match_all:
+            query_parts = [f"({' OR '.join(query_parts)})"]
+        tracks = await self.mass.music.tracks.get_library_items_by_query(
+            favorite=favorite,
+            genre_ids=genre_ids,
+            limit=FETCH_LIMIT,
+            sort_field=SortField.RANDOM,
+            provider_filter=list(user_provider_filter) if user_provider_filter else None,
+            extra_query_parts=query_parts,
+            extra_query_params=query_params,
+        )
+        return _filter_by_explicit(tracks, explicit)
 
     async def _folder_tracks(
         self,

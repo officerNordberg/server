@@ -500,7 +500,7 @@ async def test_evaluate_and_no_filters_returns_library() -> None:
 
 @pytest.mark.asyncio
 async def test_evaluate_and_artist_filter() -> None:
-    """AND logic filters tracks to only those from the specified artists."""
+    """AND logic fetches the artist's tracks directly instead of filtering a library sample."""
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
@@ -508,14 +508,18 @@ async def test_evaluate_and_artist_filter() -> None:
     config.get_value.return_value = "GLOBAL"
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
-    artist_a = _make_mock_track("1", artist_ids=["10"])
-    artist_b = _make_mock_track("2", artist_ids=["20"])
-    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[artist_a, artist_b])
+    artist_track = _make_mock_track("1", artist_ids=["10"])
+    linked_mock = AsyncMock(return_value=[artist_track])
+    cast("Any", plugin)._get_linked_library_tracks = linked_mock
+    cast("Any", plugin)._get_library_tracks = AsyncMock(side_effect=AssertionError("sampled"))
 
-    rules = SmartPlaylistRules(artist_ids=[10], logic=LOGIC_AND, limit=10)
+    rules = SmartPlaylistRules(artist_ids=[10], album_ids=[30], logic=LOGIC_AND, limit=10)
     result = await plugin._evaluate_and(rules)
-    assert len(result) == 1
-    assert result[0].item_id == "1"
+
+    assert result == [artist_track]
+    assert linked_mock.await_args is not None
+    assert linked_mock.await_args.args == ([30], [10])
+    assert linked_mock.await_args.kwargs["match_all"] is True
 
 
 @pytest.mark.asyncio
@@ -531,12 +535,9 @@ async def test_evaluate_or_genre_and_artist_union() -> None:
     genre_track = _make_mock_track("1", uri="library://track/1", artist_ids=["99"])
     artist_track = _make_mock_track("2", uri="library://track/2", artist_ids=["10"])
 
-    async def mock_get_library(**kwargs: Any) -> list[MagicMock]:
-        if kwargs.get("genre_ids"):
-            return [genre_track]
-        return [genre_track, artist_track]
-
-    cast("Any", plugin)._get_library_tracks = mock_get_library
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[genre_track])
+    linked_mock = AsyncMock(return_value=[artist_track])
+    cast("Any", plugin)._get_linked_library_tracks = linked_mock
 
     rules = SmartPlaylistRules(
         genre_ids=[5],
@@ -545,9 +546,9 @@ async def test_evaluate_or_genre_and_artist_union() -> None:
         limit=10,
     )
     result = await plugin._evaluate_or(rules)
-    uris = {t.uri for t in result}
-    assert "library://track/1" in uris
-    assert "library://track/2" in uris
+    assert {t.uri for t in result} == {"library://track/1", "library://track/2"}
+    assert linked_mock.await_args is not None
+    assert linked_mock.await_args.kwargs["match_all"] is False
 
 
 @pytest.mark.asyncio
