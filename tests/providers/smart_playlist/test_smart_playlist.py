@@ -2294,6 +2294,7 @@ async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
 
     # Mock required methods
     cast("Any", plugin)._resolve_excluded_genre_names = AsyncMock(return_value={"rock"})
+    cast("Any", plugin)._remove_tracks_in_genres = AsyncMock(return_value=[track])
     cast("Any", plugin)._get_album_ids_for_types = AsyncMock(return_value=[])
     cast("Any", plugin)._apply_exclusions = MagicMock(return_value=[track])
     cast("Any", plugin)._deduplicate_tracks = MagicMock(return_value=[track])
@@ -2308,6 +2309,70 @@ async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
 
     # Verify enrichment was called in seed mode
     enrich_mock.assert_called_once()
+
+
+def _make_tagged_library_track(item_id: str, genres: set[str]) -> Track:
+    """Build a library track carrying the given raw genre tags."""
+    track = Track(
+        item_id=item_id,
+        provider="library",
+        name=f"Track {item_id}",
+        uri=f"library://track/{item_id}",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain="library",
+                provider_instance="library",
+                available=True,
+            )
+        },
+    )
+    track.metadata = MediaItemMetadata()
+    track.metadata.genres = genres
+    return track
+
+
+@pytest.mark.asyncio
+async def test_excluded_genre_removes_tracks_mapped_in_library_despite_other_tags() -> None:
+    """A track mapped to an excluded genre is removed even when its own tags name other genres."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    christmas_song = _make_tagged_library_track("1", {"Pop", "Holiday"})
+    other_song = _make_tagged_library_track("2", {"Pop", "Rock"})
+    mass.music.genres.get_track_ids_for_genres = AsyncMock(return_value={1})
+
+    result = await plugin._remove_tracks_in_genres([christmas_song, other_song], [10])
+
+    assert result == [other_song]
+    mass.music.genres.get_track_ids_for_genres.assert_awaited_once_with([10])
+
+
+@pytest.mark.asyncio
+async def test_resolve_excluded_genre_names_includes_db_name_and_aliases() -> None:
+    """Excluded genre names cover the stored name plus the library name and every alias."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    genre = MagicMock()
+    genre.name = "christmas music"
+    genre.genre_aliases = {"christmas music", "Holiday", "Xmas"}
+    mass.music.genres.get_library_item = AsyncMock(return_value=genre)
+    rules = SmartPlaylistRules(excluded_genre_ids=[10], excluded_genre_names={10: "Christmas"})
+
+    names = await plugin._resolve_excluded_genre_names(rules)
+
+    assert names == {"christmas", "christmas music", "holiday", "xmas"}
+    tagged = _make_tagged_library_track("3", {"Pop", "Xmas"})
+    assert plugin._apply_exclusions([tagged], rules, names) == []
 
 
 @pytest.mark.asyncio

@@ -613,6 +613,23 @@ class GenreController(MediaControllerBase[Genre]):
             },
         )
 
+    async def get_track_ids_for_genres(self, genre_ids: list[int]) -> set[int]:
+        """
+        Return the library IDs of all tracks mapped to any of the given genres.
+
+        :param genre_ids: Library IDs of the genres to look up.
+        """
+        if not genre_ids:
+            return set()
+        query = (
+            f"SELECT DISTINCT media_id AS track_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_type = 'track' AND genre_id IN :genre_ids"
+        )
+        rows = await self.mass.music.database.get_rows_from_query(
+            query, {"genre_ids": [int(x) for x in genre_ids]}, limit=0
+        )
+        return {int(row["track_id"]) for row in rows}
+
     async def has_genre_mappings(self, media_type: MediaType, media_id: str | int) -> bool:
         """
         Return True if this media item has any genre mappings.

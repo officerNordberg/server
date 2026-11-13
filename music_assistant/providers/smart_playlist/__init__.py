@@ -809,11 +809,6 @@ class SmartPlaylistProvider(PluginProvider):
                 tracks, rules.last_played_before_value, rules.last_played_before_unit
             )
 
-            # In non-seed mode, _evaluate_and/_evaluate_or already query by genre_ids.
-            # Only enrich if excluded_genre_ids is set (needs track.metadata.genres).
-            if rules.excluded_genre_ids:
-                await self._enrich_tracks_with_db_genres(tracks)
-
         # Apply exclusions regardless of source mode. Recency (don't repeat recently-played) is
         # no longer handled here: the player queue owns it globally for dynamic playlists.
         excluded_genre_names, excl_album_type_ids = await asyncio.gather(
@@ -822,6 +817,8 @@ class SmartPlaylistProvider(PluginProvider):
             if rules.excluded_album_types
             else asyncio.sleep(0),
         )
+        if rules.excluded_genre_ids:
+            tracks = await self._remove_tracks_in_genres(tracks, rules.excluded_genre_ids)
         tracks = self._apply_exclusions(
             tracks, rules, excluded_genre_names, excl_album_type_ids or None
         )
@@ -1000,16 +997,39 @@ class SmartPlaylistProvider(PluginProvider):
         return result
 
     async def _resolve_excluded_genre_names(self, rules: SmartPlaylistRules) -> set[str]:
-        """Resolve excluded_genre_ids to a lowercase name set for matching."""
+        """Resolve excluded_genre_ids to a lowercase set of genre names and aliases for matching."""
         if not rules.excluded_genre_ids:
             return set()
-        genre_id_to_name = dict(rules.excluded_genre_names)
+        names: set[str] = set()
         for genre_id in rules.excluded_genre_ids:
-            if genre_id not in genre_id_to_name:
-                with suppress(Exception):
-                    genre = await self.mass.music.genres.get_library_item(genre_id)
-                    genre_id_to_name[genre_id] = genre.name
-        return {v.lower() for v in genre_id_to_name.values() if v}
+            if stored_name := rules.excluded_genre_names.get(genre_id):
+                names.add(stored_name)
+            with suppress(Exception):
+                genre = await self.mass.music.genres.get_library_item(genre_id)
+                names.add(genre.name)
+                names.update(genre.genre_aliases or ())
+        return {name.lower() for name in names if name}
+
+    async def _remove_tracks_in_genres(
+        self, tracks: list[Track], genre_ids: list[int]
+    ) -> list[Track]:
+        """
+        Remove tracks that the library maps to any of the given genres.
+
+        :param tracks: Tracks to filter.
+        :param genre_ids: Library IDs of the genres whose tracks should be removed.
+        """
+        genre_track_ids = await self.mass.music.genres.get_track_ids_for_genres(genre_ids)
+        if not genre_track_ids or not tracks:
+            return tracks
+        track_id_map = await self._build_track_id_map(tracks)
+        remove = {
+            id(track)
+            for track_id, mapped_tracks in track_id_map.items()
+            if track_id in genre_track_ids
+            for track in mapped_tracks
+        }
+        return [track for track in tracks if id(track) not in remove]
 
     async def _build_track_id_map(
         self,

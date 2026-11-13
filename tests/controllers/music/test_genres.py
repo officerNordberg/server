@@ -1610,6 +1610,34 @@ class TestQueryMethods:
             )
         assert len(await genre_ctrl.tracks(genre.item_id, limit=2)) == 2
 
+    async def test_get_track_ids_for_genres(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Only tracks mapped to the genre themselves are returned, not their album mates."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("TrackIdsGenre"))
+        genre_id = int(genre.item_id)
+        mapped = await _add_test_track(mass, "TrackIds Mapped")
+        album_mate = await _add_test_track(mass, "TrackIds Album Mate")
+        excluded = await _add_test_track(mass, "TrackIds Excluded")
+        album = await _add_test_album(mass, "TrackIds Album")
+        for number, track in enumerate((mapped, album_mate, excluded), start=1):
+            await mass.music.database.insert(
+                DB_TABLE_ALBUM_TRACKS,
+                {
+                    "album_id": int(album.item_id),
+                    "track_id": int(track.item_id),
+                    "disc_number": 1,
+                    "track_number": number,
+                },
+            )
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, mapped.item_id)
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.TRACK, excluded.item_id)
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.ALBUM, album.item_id)
+        await genre_ctrl.exclude_genre_from_media_item(genre_id, MediaType.TRACK, excluded.item_id)
+
+        assert await genre_ctrl.get_track_ids_for_genres([genre_id]) == {int(mapped.item_id)}
+        assert await genre_ctrl.get_track_ids_for_genres([]) == set()
+
     async def test_genre_albums_returns_mapped(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
