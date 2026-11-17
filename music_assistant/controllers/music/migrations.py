@@ -1449,6 +1449,10 @@ async def migrate_database(  # noqa: C901, PLR0912, PLR0915
             if "duplicate column" not in str(err) and "no such table" not in str(err):
                 raise
 
+    if prev_version <= 74:
+        # artist tag splitting on "(feat. " left the closing bracket on the featured artist
+        await _strip_unmatched_artist_brackets(database, logger)
+
     # (re)build the FTS search tables so they are in sync with the content tables;
     # this both populates them on first migration to the FTS-enabled schema and
     # repairs them after any migration that rewrote rows without the sync triggers active
@@ -2215,6 +2219,46 @@ def _station_radio_metadata(metadata: Any) -> Any:
             image["path"] = f"radio/{path.removeprefix('playlist/')}"
             changed = True
     return serialize_to_json(value) if changed else metadata
+
+
+async def _strip_unmatched_artist_brackets(
+    database: DatabaseConnection, logger: logging.Logger
+) -> None:
+    """Remove the unmatched closing bracket that ends some library artist names."""
+    columns = await _table_columns(database, DB_TABLE_ARTISTS)
+    if not {"name", "sort_name", "search_name", "search_sort_name"} <= columns:
+        return
+    for db_row in await database.get_rows_from_query(
+        f"SELECT item_id, name, sort_name FROM {DB_TABLE_ARTISTS} WHERE name LIKE '%)'",
+        limit=0,
+    ):
+        name = _strip_unmatched_bracket(db_row["name"])
+        if not name or name == db_row["name"]:
+            continue
+        sort_name = _strip_unmatched_bracket(db_row["sort_name"]) or name
+        try:
+            await database.update(
+                DB_TABLE_ARTISTS,
+                {"item_id": db_row["item_id"]},
+                {
+                    "name": name,
+                    "sort_name": sort_name,
+                    "search_name": create_safe_string(name, True, True),
+                    "search_sort_name": create_safe_string(sort_name, True, True),
+                },
+            )
+        except Exception as err:
+            logger.warning("Could not fix the name of artist %s: %s", db_row["item_id"], err)
+
+
+def _strip_unmatched_bracket(value: object) -> str | None:
+    """Return the value without a trailing closing bracket that nothing in it opens."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    while value.endswith(")") and value.count(")") > value.count("("):
+        value = value[:-1].rstrip()
+    return value
 
 
 async def _table_columns(database: DatabaseConnection, table: str) -> set[str]:

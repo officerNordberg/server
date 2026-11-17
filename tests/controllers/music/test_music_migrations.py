@@ -1654,3 +1654,56 @@ async def test_migration_drops_remotely_accessible_opensubsonic_images(
         }
         assert played[1] is None
         assert json.loads(played[2]) == cover_art
+
+
+async def test_migration_strips_unmatched_closing_bracket_from_artist_names(
+    database: DatabaseConnection,
+) -> None:
+    """
+    A pre-75 database loses the stray closing bracket a "(feat. " split left on artist names.
+
+    Balanced brackets that belong to the name stay, and running the migration twice is harmless.
+    """
+    await database.execute("DROP TABLE artists")
+    await database.execute(
+        "CREATE TABLE artists([item_id] INTEGER PRIMARY KEY, [name] TEXT NOT NULL, "
+        "[sort_name] TEXT NOT NULL, [search_name] TEXT NOT NULL, "
+        "[search_sort_name] TEXT NOT NULL, [external_ids] json NOT NULL DEFAULT '[]')"
+    )
+    stored = {
+        1: ("John Prine)", "prine, john)"),
+        2: ("Suede (UK)", "suede (uk)"),
+        3: ("Artist B))", "artist b"),
+        4: ("Tyler Childers", "childers, tyler"),
+    }
+    for item_id, (name, sort_name) in stored.items():
+        await database.execute(
+            "INSERT INTO artists (item_id, name, sort_name, search_name, search_sort_name) "
+            "VALUES (:item_id, :name, :sort_name, :search_name, :search_sort_name)",
+            {
+                "item_id": item_id,
+                "name": name,
+                "sort_name": sort_name,
+                "search_name": create_safe_string(name, True, True),
+                "search_sort_name": create_safe_string(sort_name, True, True),
+            },
+        )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    for _ in range(2):
+        await migrate_database(
+            mass, database, MagicMock(), prev_version=74, create_tables=AsyncMock()
+        )
+
+    artists = {
+        row["item_id"]: (row["name"], row["sort_name"], row["search_name"])
+        for row in await database.get_rows_from_query(
+            "SELECT item_id, name, sort_name, search_name FROM artists"
+        )
+    }
+    assert artists[1] == ("John Prine", "prine, john", create_safe_string("John Prine", True, True))
+    assert artists[2][:2] == stored[2]
+    assert artists[3][:2] == ("Artist B", "artist b")
+    assert artists[4][:2] == stored[4]
