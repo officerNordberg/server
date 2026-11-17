@@ -173,6 +173,10 @@ def _split_on_featuring(item: str) -> list[str]:
             parts = []
             before = item[:pos].strip()
             after = item[pos + len(splitter) :].strip()
+            # A parenthesized splitter opened a bracket: drop its unmatched closing
+            # bracket, but keep balanced ones that belong to the artist name.
+            if "(" in splitter and after.endswith(")") and after.count(")") > after.count("("):
+                after = after[:-1].rstrip()
             if before:
                 parts.extend(_split_on_featuring(before))
             if after:

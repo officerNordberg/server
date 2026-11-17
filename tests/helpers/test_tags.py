@@ -495,6 +495,22 @@ def test_split_artists_featuring() -> None:
     assert result == ("Above & Beyond", "OceanLab")
 
 
+def test_split_artists_parenthesized_featuring() -> None:
+    """Test that a parenthesized featuring credit does not leave its closing bracket behind."""
+    result = split_artists("Tyler Childers (feat. John Prine)", expected_count=None)
+    assert result == ("Tyler Childers", "John Prine")
+
+    result = split_artists("Kacey Musgraves (ft. John Prine)", expected_count=2)
+    assert result == ("Kacey Musgraves", "John Prine")
+
+    result = split_artists("Artist A(feat. Artist B)", expected_count=None)
+    assert result == ("Artist A", "Artist B")
+
+    # Balanced brackets that are part of the featured artist's name are kept
+    result = split_artists("Artist A (feat. Suede (UK))", expected_count=None)
+    assert result == ("Artist A", "Suede (UK)")
+
+
 def test_split_artists_no_oversplit() -> None:
     """Test that split_artists stops at expected_count and doesn't over-split."""
     # Hall & Oates is a duo, with 2 MB IDs we should split on feat. first
